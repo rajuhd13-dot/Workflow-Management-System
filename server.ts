@@ -406,9 +406,19 @@ function syncToAppsScript(payload: any) {
     });
 }
 
+let lastUsersSyncTime = 0;
+let lastWorkflowsSyncTime = 0;
+const SYNC_THROTTLE_MS = 30000; // 30 seconds throttle
+
 // Utility to fetch and sync users list from Google Sheets Apps Script URL
-async function syncUsersFromAppsScript(url: string) {
+async function syncUsersFromAppsScript(url: string, force = false) {
   if (!url) return;
+  const now = Date.now();
+  if (!force && (now - lastUsersSyncTime < SYNC_THROTTLE_MS)) {
+    console.log("[Sync Users] Throttled request: Last sync was less than 30s ago, skipping to avoid concurrency issues.");
+    return;
+  }
+  lastUsersSyncTime = now;
   try {
     const fetchUrl = `${url}${url.includes("?") ? "&" : "?"}action=getUsers`;
     const controller = new AbortController();
@@ -481,8 +491,14 @@ async function syncUsersFromAppsScript(url: string) {
 }
 
 // Utility to fetch and build local nested workflows map from flat worksheet rows
-async function syncWorkflowsFromAppsScript(url: string) {
+async function syncWorkflowsFromAppsScript(url: string, force = false) {
   if (!url) return;
+  const now = Date.now();
+  if (!force && (now - lastWorkflowsSyncTime < SYNC_THROTTLE_MS)) {
+    console.log("[Sync Workflows] Throttled request: Last sync was less than 30s ago, skipping to avoid concurrency issues.");
+    return;
+  }
+  lastWorkflowsSyncTime = now;
   try {
     const fetchUrl = `${url}${url.includes("?") ? "&" : "?"}action=getWorkflows`;
     const controller = new AbortController();
@@ -704,13 +720,20 @@ async function startServer() {
       const url =
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
+      
+      const hasStoredUsers = db && db.users && db.users.length > 0;
       if (url) {
-        // Under Vercel serverless environment, background processes are paused/discarded once the response is sent.
-        // We MUST await the synchronized fetch to ensure that Google Sheet data successfully populates the writeable /tmp/db.json.
-        await syncUsersFromAppsScript(url).catch(e => console.warn("Awaited detection sync warning:", e));
+        if (!hasStoredUsers) {
+          // If we have absolutely NO users seeded, we MUST await sync to boot the user list, bypassing throttle
+          await syncUsersFromAppsScript(url, true).catch(e => console.warn("Awaited detection sync warning:", e));
+        } else {
+          // If we already have users populated, do NOT block the instant PIN check on a slow Google Sheets API load.
+          // Run the synchronizer in the background so that updates are pulled without causing connection timeouts (500) under Serverless Vercel.
+          syncUsersFromAppsScript(url, false).catch(e => console.warn("Background detection sync warning:", e));
+        }
       }
 
-      // Check immediate local database (which might have been synced by previous calls or start-up)
+      // Check current state (either updated by background sync or fallback)
       const freshDb = readDB();
       const user = freshDb.users.find(
         (u: any) => String(u.pin).trim().toUpperCase() === String(pin).trim().toUpperCase(),
@@ -747,8 +770,15 @@ async function startServer() {
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
       
-      // Perform immediate sync if possible, but handle failure
-      await syncUsersFromAppsScript(url).catch(e => console.warn("Login pre-sync warning:", e));
+      const hasStoredUsers = db && db.users && db.users.length > 0;
+      if (url) {
+        if (!hasStoredUsers) {
+          await syncUsersFromAppsScript(url, true).catch(e => console.warn("Login pre-sync warning:", e));
+        } else {
+          // Non-blocking in background to keep login action ultra-fast and resilient against sheet latency
+          syncUsersFromAppsScript(url, false).catch(e => console.warn("Background login sync warning:", e));
+        }
+      }
 
       const freshDb = readDB();
       const user = freshDb.users.find(
@@ -993,14 +1023,21 @@ async function startServer() {
 
   // API Route: Get flattened and annotated workflows list for history & advanced filtering
   app.get("/api/workflow/history", async (req, res) => {
-    const { pin, role } = req.query;
+    const { pin, role, sync } = req.query;
 
     const db = readDB();
     const url =
       db.appscriptUrl ||
       "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
+    
+    const forceSync = sync === "true";
+    const hasWorkflows = db && db.workflows && db.workflows.length > 0;
     if (url) {
-      await syncWorkflowsFromAppsScript(url);
+      if (!hasWorkflows) {
+        await syncWorkflowsFromAppsScript(url, true).catch(e => console.warn("Blocking workflow history sync warning:", e));
+      } else {
+        syncWorkflowsFromAppsScript(url, forceSync).catch(e => console.warn("Background workflow history sync warning:", e));
+      }
     }
 
     const freshDb = readDB();
@@ -1197,8 +1234,15 @@ async function startServer() {
     const url =
       db.appscriptUrl ||
       "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
+    
+    const forceSync = req.query.sync === "true";
+    const hasStoredUsers = db && db.users && db.users.length > 0;
     if (url) {
-      await syncUsersFromAppsScript(url);
+      if (!hasStoredUsers) {
+        await syncUsersFromAppsScript(url, true).catch(e => console.warn("Blocking users GET sync error:", e));
+      } else {
+        syncUsersFromAppsScript(url, forceSync).catch(e => console.warn("Background users GET sync error:", e));
+      }
     }
     const freshDb = readDB();
     res.json({ success: true, data: freshDb.users });
