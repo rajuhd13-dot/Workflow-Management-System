@@ -715,9 +715,6 @@ async function startServer() {
   });
 
   // API Route: Detect User Info via PIN instantly (Login auto-check)
-  // FIX: Sync is now fully non-blocking (fire-and-forget). We ALWAYS serve
-  // from local DB immediately — this prevents Vercel 500 errors caused by
-  // Apps Script cold-start latency (8-15s) exceeding the function timeout.
   app.get("/api/auth/detect", async (req, res) => {
     const { pin } = req.query;
     if (!pin) {
@@ -730,17 +727,27 @@ async function startServer() {
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
 
-      // 🔥 KEY FIX: Always fire sync in background — NEVER await here.
-      // Vercel serverless functions can't wait 8-15s for Apps Script cold starts.
-      // The local DB (fallback users) is always available instantly.
+      const hasStoredUsers = db && db.users && db.users.length > 4; // more than just fallback seeds
+
       if (url) {
-        syncUsersFromAppsScript(url, false).catch(e =>
-          console.warn("[Detect] Background sync warning (non-fatal):", e.message || e)
-        );
+        if (!hasStoredUsers) {
+          // No real users yet — must await sync once to populate from Sheet
+          // Use a short race timeout so we never exceed Vercel's 10s limit
+          await Promise.race([
+            syncUsersFromAppsScript(url, true),
+            new Promise(resolve => setTimeout(resolve, 5000)) // max 5s wait
+          ]).catch(e => console.warn("[Detect] Sync race warning:", e.message || e));
+        } else {
+          // Already have users — fire background sync, serve instantly
+          syncUsersFromAppsScript(url, false).catch(e =>
+            console.warn("[Detect] Background sync warning (non-fatal):", e.message || e)
+          );
+        }
       }
 
-      // Immediately serve from local DB — no waiting for Apps Script
-      const user = db.users.find(
+      // Serve from DB (either just-synced or cached)
+      const freshDb = readDB();
+      const user = freshDb.users.find(
         (u: any) => String(u.pin).trim().toUpperCase() === String(pin).trim().toUpperCase(),
       );
 
@@ -774,12 +781,18 @@ async function startServer() {
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
 
-      // 🔥 KEY FIX: Fire-and-forget — never await Apps Script during login.
-      // Always use local DB for instant response. Sync happens in background.
+      const hasStoredUsers = db && db.users && db.users.length > 4;
       if (url) {
-        syncUsersFromAppsScript(url, false).catch(e =>
-          console.warn("[Login] Background sync warning (non-fatal):", e.message || e)
-        );
+        if (!hasStoredUsers) {
+          await Promise.race([
+            syncUsersFromAppsScript(url, true),
+            new Promise(resolve => setTimeout(resolve, 5000))
+          ]).catch(e => console.warn("[Login] Sync race warning:", e.message || e));
+        } else {
+          syncUsersFromAppsScript(url, false).catch(e =>
+            console.warn("[Login] Background sync warning (non-fatal):", e.message || e)
+          );
+        }
       }
 
       const freshDb = readDB();
