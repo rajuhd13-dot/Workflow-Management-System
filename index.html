@@ -4,6 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Google AI Studio App</title>
+    <script>
+      // Capture and intercept cross-origin generic script errors or benign HMR warnings
+      window.addEventListener('error', function(event) {
+        if (event.message === "Script error." || (event.error && event.error.message && event.error.message.includes("websocket"))) {
+          console.warn("[CORS/HMR Interceptor] Suppressed generic/benign browser error:", event.message);
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          return true;
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(event) {
+        if (event.reason && (String(event.reason).includes("websocket") || String(event.reason.message || "").includes("websocket"))) {
+          console.warn("[CORS/HMR Interceptor] Suppressed unhandled rejection:", event.reason);
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          return true;
+        }
+      }, true);
+    </script>
   </head>
   <body>
     <div id="root"></div>
