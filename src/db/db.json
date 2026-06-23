@@ -1,0 +1,74 @@
+{
+  "users": [
+    {
+      "sl": 1,
+      "name": "Nazmul",
+      "pin": "2653",
+      "role": "User",
+      "campus": "Motijheel ESM",
+      "status": "Active"
+    },
+    {
+      "sl": 2,
+      "name": "Manager Admin",
+      "pin": "8888",
+      "role": "Admin",
+      "campus": "Gulshan Branch",
+      "status": "Active"
+    },
+    {
+      "sl": 3,
+      "name": "Owner Super Admin",
+      "pin": "9999",
+      "role": "Super Admin",
+      "campus": "Head Office",
+      "status": "Active"
+    },
+    {
+      "sl": 4,
+      "name": "Admin S",
+      "pin": "44095",
+      "password": "440955",
+      "role": "Super Admin",
+      "campus": "Head Office",
+      "status": "Active"
+    }
+  ],
+  "workflows": [],
+  "permissions": {
+    "Super Admin": [
+      "my_profile",
+      "enter_workflow",
+      "history_workflow",
+      "filter_workflow",
+      "user_management",
+      "attendance_report",
+      "attendance_grid_report",
+      "member_responsibility",
+      "role_permission",
+      "device_management"
+    ],
+    "Admin": [
+      "my_profile",
+      "enter_workflow",
+      "history_workflow",
+      "filter_workflow",
+      "user_management",
+      "attendance_report",
+      "attendance_grid_report",
+      "member_responsibility",
+      "device_management"
+    ],
+    "User": [
+      "my_profile",
+      "enter_workflow",
+      "history_workflow",
+      "filter_workflow"
+    ]
+  },
+  "devices": [],
+  "appscriptUrl": "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec",
+  "settings": {
+    "showLoginInstructions": true
+  }
+}

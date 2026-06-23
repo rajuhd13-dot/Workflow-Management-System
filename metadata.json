@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Workflow Management System",
+  "description": "A web-based Role-Based Workflow Management System with detailed tracking, advanced filters, user management, interactive analytics, and customizable role permissions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
