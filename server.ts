@@ -100,7 +100,7 @@ function initActiveDB() {
     // Try alternative paths if process.cwd() didn't work (e.g. inside vercel or built asset structure)
     if (!seedData || !seedData.users) {
       try {
-        const altPath = path.join(__dirname, "..", "src", "db", "db.json");
+        const altPath = path.join(process.cwd(), "..", "src", "db", "db.json");
         if (fs.existsSync(altPath)) {
           seedData = JSON.parse(fs.readFileSync(altPath, "utf8"));
         }
@@ -2032,24 +2032,24 @@ export default async function (req: any, res: any) {
     // Reconstruct URL before Express receives it (Critical for Vercel Serverless routing)
     if (req.url && process.env.VERCEL) {
       try {
-        const urlObj = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const host = req.headers.host || "localhost";
+        // req.url might not start with / if it's already an absolute URL, so handle safely
+        const baseUrl = req.url.startsWith("http") ? undefined : `http://${host}`;
+        const urlObj = new URL(req.url, baseUrl);
         
         // Vercel rewrites /api/(.*) to /api/index?_original_path=$1
-        // We must extract _original_path from the parsed URL search parameters,
-        // because req.query is not yet populated by Express at this raw HTTP layer.
         const originalPath = urlObj.searchParams.get("_original_path");
-        
         if (originalPath) {
           urlObj.searchParams.delete("_original_path");
-          const search = urlObj.search; // Includes '?' if there are params, or '' if empty
-          req.url = "/api/" + originalPath + search;
+          req.url = "/api/" + originalPath + urlObj.search;
         } else if (req.headers["x-matched-path"] && req.headers["x-matched-path"] !== "/api/index") {
           req.url = req.headers["x-matched-path"] + urlObj.search;
         } else if (!req.url.startsWith("/api/")) {
-          req.url = "/api" + (urlObj.pathname.startsWith("/") ? "" : "/") + urlObj.pathname + urlObj.search;
+          const pathname = urlObj.pathname.startsWith("/") ? urlObj.pathname : "/" + urlObj.pathname;
+          req.url = "/api" + pathname + urlObj.search;
         }
-      } catch (rewriteErr) {
-         console.warn("Vercel Re-writer ignored error:", rewriteErr);
+      } catch (rewriteErr: any) {
+         console.warn("Vercel Re-writer ignored error:", rewriteErr.message);
       }
     }
 
@@ -2057,12 +2057,24 @@ export default async function (req: any, res: any) {
     return new Promise<void>((resolve) => {
       res.on("finish", resolve);
       res.on("close", resolve);
-      res.on("error", resolve);
-      app(req, res);
+      res.on("error", (err: any) => {
+        console.error("Express Response Error:", err);
+        resolve();
+      });
+      // Safety net: In case Express throws synchronously
+      try {
+        app(req, res);
+      } catch (exprErr: any) {
+        console.error("Express Sync Error:", exprErr);
+        if (!res.headersSent) {
+          res.status(500).json({ success: false, error: "Express sync crash", details: exprErr.message });
+        }
+        resolve();
+      }
     });
   } catch (err: any) {
-    console.error("Vercel Serverless Error:", err);
-    res.status(500).json({ success: false, error: "Cloud function crashed.", details: err.message });
+    console.error("Vercel Serverless Critical Error:", err);
+    if (!res.headersSent) res.status(500).json({ success: false, error: "Cloud function crashed.", details: err.message, stack: err.stack });
   }
 }
 
