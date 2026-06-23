@@ -436,7 +436,7 @@ async function syncUsersFromAppsScript(url: string, force = false) {
         pin: String(u.pin || u.Pin || u.PIN || "").trim(),
         role: String(u.role || u.Role || "User").trim(),
         campus: String(u.campus || u.Campus || "").trim(),
-        status: String(u.status || u.Status || "Active").trim(),
+        status: String(u.status || u.Status || u.stutas || u.Stutas || "Active").trim(),
         password: String(u.password || u.Password || u.H || "").trim(),
         customPermissions: String(u.permission || u.Permission || u.permissions || u.Permissions || u.G || "")
           .split(",")
@@ -727,9 +727,9 @@ async function startServer() {
           // If we have absolutely NO users seeded, we MUST await sync to boot the user list, bypassing throttle
           await syncUsersFromAppsScript(url, true).catch(e => console.warn("Awaited detection sync warning:", e));
         } else {
-          // If we already have users populated, do NOT block the instant PIN check on a slow Google Sheets API load.
-          // Run the synchronizer in the background so that updates are pulled without causing connection timeouts (500) under Serverless Vercel.
-          syncUsersFromAppsScript(url, false).catch(e => console.warn("Background detection sync warning:", e));
+          // If we already have users populated, safely await the sync (it is throttled so it's typically instant)
+          // Run the synchronizer safely awaited to prevent open sockets in Vercel Serverless.
+          await syncUsersFromAppsScript(url, false).catch(e => console.warn("Background detection sync warning:", e));
         }
       }
 
@@ -776,7 +776,7 @@ async function startServer() {
           await syncUsersFromAppsScript(url, true).catch(e => console.warn("Login pre-sync warning:", e));
         } else {
           // Non-blocking in background to keep login action ultra-fast and resilient against sheet latency
-          syncUsersFromAppsScript(url, false).catch(e => console.warn("Background login sync warning:", e));
+          await syncUsersFromAppsScript(url, false).catch(e => console.warn("Background login sync warning:", e));
         }
       }
 
@@ -1036,7 +1036,7 @@ async function startServer() {
       if (!hasWorkflows) {
         await syncWorkflowsFromAppsScript(url, true).catch(e => console.warn("Blocking workflow history sync warning:", e));
       } else {
-        syncWorkflowsFromAppsScript(url, forceSync).catch(e => console.warn("Background workflow history sync warning:", e));
+        await syncWorkflowsFromAppsScript(url, forceSync).catch(e => console.warn("Background workflow history sync warning:", e));
       }
     }
 
@@ -1241,7 +1241,7 @@ async function startServer() {
       if (!hasStoredUsers) {
         await syncUsersFromAppsScript(url, true).catch(e => console.warn("Blocking users GET sync error:", e));
       } else {
-        syncUsersFromAppsScript(url, forceSync).catch(e => console.warn("Background users GET sync error:", e));
+        await syncUsersFromAppsScript(url, forceSync).catch(e => console.warn("Background users GET sync error:", e));
       }
     }
     const freshDb = readDB();
@@ -2030,50 +2030,23 @@ const appPromise = startServer();
 export default async function (req: any, res: any) {
   try {
     // Reconstruct URL before Express receives it (Critical for Vercel Serverless routing)
-    const originalUrl = req.url || "";
-    if (originalUrl) {
-      try {
-        const urlObj = new URL(originalUrl, "http://localhost");
-        const origPathQuery = urlObj.searchParams.get("_original_path") || (req.query && req.query._original_path);
-        const matchedPathHeader = req.headers["x-matched-path"];
-
-        if (origPathQuery) {
-          const pathStr = Array.isArray(origPathQuery) ? origPathQuery.join("/") : String(origPathQuery);
-          urlObj.searchParams.delete("_original_path");
-          urlObj.pathname = "/api/" + pathStr.replace(/^\/+/, "");
-          req.url = urlObj.pathname + urlObj.search;
-          
-          req.query = req.query || {};
-          delete req.query._original_path;
-          urlObj.searchParams.forEach((val: any, key: any) => {
-            req.query[key] = val;
-          });
-          console.log(`[Vercel Serverless Pre-Fixer] Reconstructed query match: ${originalUrl} -> ${req.url}`);
-        } else if (matchedPathHeader && String(matchedPathHeader) !== "/api/index") {
-          const matchedPathStr = String(matchedPathHeader);
-          urlObj.pathname = matchedPathStr;
-          req.url = urlObj.pathname + urlObj.search;
-          console.log(`[Vercel Serverless Pre-Fixer] Reconstructed header match: ${originalUrl} -> ${req.url}`);
-        } else if (req.url.startsWith("/api/index")) {
-          // Keep as is
-        } else if (!req.url.startsWith("/api")) {
-          const separator = req.url.startsWith("/") ? "" : "/";
-          req.url = "/api" + separator + req.url;
-          console.log(`[Vercel Serverless Pre-Fixer] Prepended /api path: ${originalUrl} -> ${req.url}`);
-        }
-
-        // Force Express to flush its parsed URL caches
-        try { delete req._parsedUrl; } catch (e) {}
-        try { delete req._parsedUrlSelf; } catch (e) {}
-        try { delete req.path; } catch (e) {}
-        try { delete req._path; } catch (e) {}
-      } catch (err) {
-        console.warn("[Vercel Serverless Pre-Fixer] Routing reconstruction error ignored:", err);
+    if (req.url && process.env.VERCEL) {
+      if (req.query && req.query._original_path) {
+        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        urlObj.searchParams.delete('_original_path');
+        const search = urlObj.search; // Includes '?' if there are params, or '' if empty
+        req.url = "/api/" + req.query._original_path + search;
+      } else if (req.headers["x-matched-path"] && req.headers["x-matched-path"] !== "/api/index") {
+        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        req.url = req.headers["x-matched-path"] + urlObj.search;
+      } else if (!req.url.startsWith("/api/")) {
+        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        req.url = "/api" + (urlObj.pathname.startsWith("/") ? "" : "/") + urlObj.pathname + urlObj.search;
       }
     }
 
     const app = await appPromise;
-    return app(req, res);
+    app(req, res);
   } catch (err: any) {
     console.error("Vercel Serverless Error:", err);
     res.status(500).json({ success: false, error: "Cloud function crashed.", details: err.message });
