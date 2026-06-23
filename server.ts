@@ -422,7 +422,7 @@ async function syncUsersFromAppsScript(url: string, force = false) {
   try {
     const fetchUrl = `${url}${url.includes("?") ? "&" : "?"}action=getUsers`;
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 6500); // 6.5s timeout for resilient cold-start sync
+    const id = setTimeout(() => controller.abort(), 4000); // 4s timeout — safe within Vercel 10s function limit
 
     const res = await fetch(fetchUrl, { signal: controller.signal });
     clearTimeout(id);
@@ -502,7 +502,7 @@ async function syncWorkflowsFromAppsScript(url: string, force = false) {
   try {
     const fetchUrl = `${url}${url.includes("?") ? "&" : "?"}action=getWorkflows`;
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 6000); // 6s timeout for workflow loading
+    const id = setTimeout(() => controller.abort(), 4000); // 4s timeout — safe within Vercel 10s function limit
 
     const res = await fetch(fetchUrl, { signal: controller.signal });
     clearTimeout(id);
@@ -690,25 +690,34 @@ async function startServer() {
   });
 
   // API Route: Automatically sync users from Google Sheets when login page mounts
+  // FIX: Respond immediately with success, run sync in background to avoid timeout
   app.post("/api/auth/sync-on-login-mount", async (req, res) => {
     try {
       const db = readDB();
       const url =
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
-      
+
+      // Respond immediately — sync runs in background
+      res.json({ success: true, message: "Background sync initiated." });
+
+      // Fire sync after response is sent
       if (url) {
-        console.log("[Login Mount] Performing automatic background user sync...");
-        await syncUsersFromAppsScript(url);
+        syncUsersFromAppsScript(url, false).catch(e =>
+          console.warn("[Login Mount] Background sync warning (non-fatal):", e.message || e)
+        );
       }
-      res.json({ success: true, message: "Users sync executed successfully on login mount." });
     } catch (err: any) {
       console.warn("[Login Mount] Sync error:", err);
-      res.json({ success: false, error: err.message || String(err) });
+      // Always return success so login page doesn't show error
+      res.json({ success: true, message: "Sync skipped (non-fatal)." });
     }
   });
 
   // API Route: Detect User Info via PIN instantly (Login auto-check)
+  // FIX: Sync is now fully non-blocking (fire-and-forget). We ALWAYS serve
+  // from local DB immediately — this prevents Vercel 500 errors caused by
+  // Apps Script cold-start latency (8-15s) exceeding the function timeout.
   app.get("/api/auth/detect", async (req, res) => {
     const { pin } = req.query;
     if (!pin) {
@@ -720,22 +729,18 @@ async function startServer() {
       const url =
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
-      
-      const hasStoredUsers = db && db.users && db.users.length > 0;
+
+      // 🔥 KEY FIX: Always fire sync in background — NEVER await here.
+      // Vercel serverless functions can't wait 8-15s for Apps Script cold starts.
+      // The local DB (fallback users) is always available instantly.
       if (url) {
-        if (!hasStoredUsers) {
-          // If we have absolutely NO users seeded, we MUST await sync to boot the user list, bypassing throttle
-          await syncUsersFromAppsScript(url, true).catch(e => console.warn("Awaited detection sync warning:", e));
-        } else {
-          // If we already have users populated, safely await the sync (it is throttled so it's typically instant)
-          // Run the synchronizer safely awaited to prevent open sockets in Vercel Serverless.
-          await syncUsersFromAppsScript(url, false).catch(e => console.warn("Background detection sync warning:", e));
-        }
+        syncUsersFromAppsScript(url, false).catch(e =>
+          console.warn("[Detect] Background sync warning (non-fatal):", e.message || e)
+        );
       }
 
-      // Check current state (either updated by background sync or fallback)
-      const freshDb = readDB();
-      const user = freshDb.users.find(
+      // Immediately serve from local DB — no waiting for Apps Script
+      const user = db.users.find(
         (u: any) => String(u.pin).trim().toUpperCase() === String(pin).trim().toUpperCase(),
       );
 
@@ -752,7 +757,6 @@ async function startServer() {
         success: false,
         error: "Authentication service temporarily unavailable.",
         details: err.message || String(err),
-        stack: err.stack
       });
     }
   });
@@ -769,15 +773,13 @@ async function startServer() {
       const url =
         db.appscriptUrl ||
         "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec";
-      
-      const hasStoredUsers = db && db.users && db.users.length > 0;
+
+      // 🔥 KEY FIX: Fire-and-forget — never await Apps Script during login.
+      // Always use local DB for instant response. Sync happens in background.
       if (url) {
-        if (!hasStoredUsers) {
-          await syncUsersFromAppsScript(url, true).catch(e => console.warn("Login pre-sync warning:", e));
-        } else {
-          // Non-blocking in background to keep login action ultra-fast and resilient against sheet latency
-          await syncUsersFromAppsScript(url, false).catch(e => console.warn("Background login sync warning:", e));
-        }
+        syncUsersFromAppsScript(url, false).catch(e =>
+          console.warn("[Login] Background sync warning (non-fatal):", e.message || e)
+        );
       }
 
       const freshDb = readDB();
