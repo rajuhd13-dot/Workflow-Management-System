@@ -2031,22 +2031,35 @@ export default async function (req: any, res: any) {
   try {
     // Reconstruct URL before Express receives it (Critical for Vercel Serverless routing)
     if (req.url && process.env.VERCEL) {
-      if (req.query && req.query._original_path) {
-        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        urlObj.searchParams.delete('_original_path');
-        const search = urlObj.search; // Includes '?' if there are params, or '' if empty
-        req.url = "/api/" + req.query._original_path + search;
-      } else if (req.headers["x-matched-path"] && req.headers["x-matched-path"] !== "/api/index") {
-        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        req.url = req.headers["x-matched-path"] + urlObj.search;
-      } else if (!req.url.startsWith("/api/")) {
-        const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        req.url = "/api" + (urlObj.pathname.startsWith("/") ? "" : "/") + urlObj.pathname + urlObj.search;
+      try {
+        const urlObj = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        
+        // Vercel rewrites /api/(.*) to /api/index?_original_path=$1
+        // We must extract _original_path from the parsed URL search parameters,
+        // because req.query is not yet populated by Express at this raw HTTP layer.
+        const originalPath = urlObj.searchParams.get("_original_path");
+        
+        if (originalPath) {
+          urlObj.searchParams.delete("_original_path");
+          const search = urlObj.search; // Includes '?' if there are params, or '' if empty
+          req.url = "/api/" + originalPath + search;
+        } else if (req.headers["x-matched-path"] && req.headers["x-matched-path"] !== "/api/index") {
+          req.url = req.headers["x-matched-path"] + urlObj.search;
+        } else if (!req.url.startsWith("/api/")) {
+          req.url = "/api" + (urlObj.pathname.startsWith("/") ? "" : "/") + urlObj.pathname + urlObj.search;
+        }
+      } catch (rewriteErr) {
+         console.warn("Vercel Re-writer ignored error:", rewriteErr);
       }
     }
 
     const app = await appPromise;
-    app(req, res);
+    return new Promise<void>((resolve) => {
+      res.on("finish", resolve);
+      res.on("close", resolve);
+      res.on("error", resolve);
+      app(req, res);
+    });
   } catch (err: any) {
     console.error("Vercel Serverless Error:", err);
     res.status(500).json({ success: false, error: "Cloud function crashed.", details: err.message });
